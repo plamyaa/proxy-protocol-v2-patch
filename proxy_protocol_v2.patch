@@ -42,11 +42,12 @@ index 49888b986..e3acb6f95 100644
 +ngx_proxy_protocol_v2_write(ngx_connection_t *c, u_char *buf, u_char *last)
 +{
 +
-+    ngx_uint_t                        port, lport;
++    ngx_uint_t                         port, lport;
 +    ngx_proxy_protocol_t              *pp;
 +    ngx_proxy_protocol_header_t       *header;
 +    ngx_proxy_protocol_inet_addrs_t   *in;
 +#if (NGX_HAVE_INET6)
++     struct in6_addr                   v6_tmp;
 +    ngx_proxy_protocol_inet6_addrs_t  *in6;
 +#endif
 +
@@ -125,8 +126,7 @@ index 49888b986..e3acb6f95 100644
 +#if (NGX_HAVE_INET6)
 +        else {
 +
-+            ngx_v4tov6(&v6_tmp, dst);
-+            ngx_memcpy(header->addr.ip6.dst_addr, &v6_tmp, 16);
++            ngx_memcpy(in6.dst_addr, &v6_tmp, 16);
 +            in6.dst_port = ((struct sockaddr_in *) dst)->sin_port;
 +
 +        }
@@ -277,4 +277,3 @@ index ed275c009..046cab996 100644
  
  #if (NGX_STREAM_SSL)
  
-
