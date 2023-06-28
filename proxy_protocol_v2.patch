@@ -1,0 +1,280 @@
+diff --git a/src/core/ngx_proxy_protocol.c b/src/core/ngx_proxy_protocol.c
+index 49888b986..e3acb6f95 100644
+--- a/src/core/ngx_proxy_protocol.c
++++ b/src/core/ngx_proxy_protocol.c
+@@ -72,6 +72,8 @@ static u_char *ngx_proxy_protocol_read_port(u_char *p, u_char *last,
+     in_port_t *port, u_char sep);
+ static u_char *ngx_proxy_protocol_v2_read(ngx_connection_t *c, u_char *buf,
+     u_char *last);
++static u_char *ngx_proxy_protocol_v2_write(ngx_connection_t *c, u_char *buf,
++    u_char *last);
+ static ngx_int_t ngx_proxy_protocol_lookup_tlv(ngx_connection_t *c,
+     ngx_str_t *tlvs, ngx_uint_t type, ngx_str_t *value);
+ 
+@@ -279,7 +281,8 @@ ngx_proxy_protocol_read_port(u_char *p, u_char *last, in_port_t *port,
+ u_char *
+ ngx_proxy_protocol_write(ngx_connection_t *c, u_char *buf, u_char *last)
+ {
+-    ngx_uint_t  port, lport;
++    ngx_uint_t             port, lport;
++    ngx_proxy_protocol_t  *pp;
+ 
+     if (last - buf < NGX_PROXY_PROTOCOL_V1_MAX_HEADER) {
+         ngx_log_error(NGX_LOG_ALERT, c->log, 0,
+@@ -291,6 +294,12 @@ ngx_proxy_protocol_write(ngx_connection_t *c, u_char *buf, u_char *last)
+         return NULL;
+     }
+ 
++    pp = ngx_pcalloc(c->pool, sizeof(ngx_proxy_protocol_t));
++    if (pp == 2) {
++        return ngx_proxy_protocol_v2_write(c, buf, 
++                                        buf + NGX_PROXY_PROTOCOL_V2_MAX_HEADER);
++    }
++
+     switch (c->sockaddr->sa_family) {
+ 
+     case AF_INET:
+@@ -482,6 +491,120 @@ ngx_proxy_protocol_v2_read(ngx_connection_t *c, u_char *buf, u_char *last)
+     return end;
+ }
+ 
++static u_char *
++ngx_proxy_protocol_v2_write(ngx_connection_t *c, u_char *buf, u_char *last)
++{
++
++    ngx_uint_t                        port, lport;
++    ngx_proxy_protocol_t              *pp;
++    ngx_proxy_protocol_header_t       *header;
++    ngx_proxy_protocol_inet_addrs_t   *in;
++#if (NGX_HAVE_INET6)
++    ngx_proxy_protocol_inet6_addrs_t  *in6;
++#endif
++
++    if (last - buf < NGX_PROXY_PROTOCOL_V2_MAX_HEADER) {
++        ngx_log_error(NGX_LOG_ALERT, c->log, 0,
++                      "too small buffer for PROXY protocol");
++        return NULL;
++    }
++
++    if (ngx_connection_local_sockaddr(c, NULL, 0) != NGX_OK) {
++        return NULL;
++    }
++
++    header = (ngx_proxy_protocol_header_t *) buf;
++
++    header->len = 0;
++
++    ngx_memcpy(header->signature, NGX_PROXY_PROTOCOL_V2_SIG,
++               NGX_PROXY_PROTOCOL_V2_SIG_LEN);
++
++    header->version_command = NGX_PROXY_PROTOCOL_V2_CMD_PROXY;
++    header->family_transport = NGX_PROXY_PROTOCOL_V2_TRANS_STREAM;
++
++    pp = ngx_pcalloc(c->pool, sizeof(ngx_proxy_protocol_t));
++
++    in = (ngx_proxy_protocol_inet_addrs_t *) buf;
++
++#if (NGX_HAVE_INET6)
++    in6 = (ngx_proxy_protocol_inet6_addrs_t *) buf;
++#endif
++
++    switch (c->sockaddr->sa_family) {
++
++    case AF_INET:
++        if (c->local_sockaddr->sa_family == AF_INET) {
++
++            in.src_addr = ((struct sockaddr_in *) src)->sin_addr.s_addr;
++            in.src_port = ((struct sockaddr_in *) src)->sin_port;
++        }
++#if (NGX_HAVE_INET6)
++        else {
++
++            ngx_v4tov6(&v6_tmp, src);
++
++            ngx_memcpy(in6.src_addr, &v6_tmp, 16);
++            in6.src_port = ((struct sockaddr_in *) src)->sin_port;
++        }
++#endif
++        break;
++
++#if (NGX_HAVE_INET6)
++    case AF_INET6:
++
++        ngx_memcpy(in6.src_addr, &((struct sockaddr_in6 *) src)->sin6_addr, 16);
++        in6.src_port = ((struct sockaddr_in6 *) src)->sin6_port;
++
++        break;
++#endif
++
++    default:
++        ngx_log_debug1(NGX_LOG_DEBUG_CORE, c->log, 0,
++                       "PROXY protocol v2 unsupported src address family %ui",
++                       c->sockaddr->sa_family);
++        goto unspec;
++    };
++
++    switch(c->local_sockaddr->sa_family) {
++
++    case AF_INET:
++
++        if (c->sockaddr->sa_family == AF_INET) {
++
++            in.dst_addr = ((struct sockaddr_in *) dst)->sin_addr.s_addr;
++            in.dst_port = ((struct sockaddr_in *) dst)->sin_port;
++        }
++#if (NGX_HAVE_INET6)
++        else {
++
++            ngx_v4tov6(&v6_tmp, dst);
++            ngx_memcpy(header->addr.ip6.dst_addr, &v6_tmp, 16);
++            in6.dst_port = ((struct sockaddr_in *) dst)->sin_port;
++
++        }
++#endif
++        break;
++
++#if (NGX_HAVE_INET6)
++    case AF_INET6:
++
++        ngx_memcpy(in6.dst_addr, &((struct sockaddr_in6 *) dst)->sin6_addr, 16);
++        in6.dst_port = ((struct sockaddr_in6 *) dst)->sin6_port;
++
++        break;
++#endif
++
++    default:
++        ngx_log_debug1(NGX_LOG_DEBUG_CORE, c->log, 0,
++                    "PROXY protocol v2 unsupported dest address family %ui",
++                    dst->sa_family);
++        goto unspec;
++    }
++
++    /** tlvs*/
++
++}
+ 
+ ngx_int_t
+ ngx_proxy_protocol_get_tlv(ngx_connection_t *c, ngx_str_t *name,
+diff --git a/src/core/ngx_proxy_protocol.h b/src/core/ngx_proxy_protocol.h
+index d1749f57b..23438181d 100644
+--- a/src/core/ngx_proxy_protocol.h
++++ b/src/core/ngx_proxy_protocol.h
+@@ -14,8 +14,18 @@
+ 
+ 
+ #define NGX_PROXY_PROTOCOL_V1_MAX_HEADER  107
++#define NGX_PROXY_PROTOCOL_V2_MAX_HEADER  216
+ #define NGX_PROXY_PROTOCOL_MAX_HEADER     4096
+ 
++#define NGX_PROXY_PROTOCOL_V2_SIG           "\x0D\x0A\x0D\x0A\x00\x0D\x0A\x51\x55\x49\x54\x0A"
++#define NGX_PROXY_PROTOCOL_V2_SIG_LEN       12
++#define NGX_PROXY_PROTOCOL_V2_CMD_PROXY     0x20 | 0x01
++#define NGX_PROXY_PROTOCOL_V2_TRANS_STREAM  0x1
++
++#define NGX_PROXY_PROTOCOLv1 0x0001
++#define NGX_PROXY_PROTOCOLv2 0x0002
++
++
+ 
+ struct ngx_proxy_protocol_s {
+     ngx_str_t           src_addr;
+diff --git a/src/stream/ngx_stream_proxy_module.c b/src/stream/ngx_stream_proxy_module.c
+index ed275c009..046cab996 100644
+--- a/src/stream/ngx_stream_proxy_module.c
++++ b/src/stream/ngx_stream_proxy_module.c
+@@ -31,6 +31,8 @@ typedef struct {
+     ngx_uint_t                       next_upstream_tries;
+     ngx_flag_t                       next_upstream;
+     ngx_flag_t                       proxy_protocol;
++    ngx_uint_t                       proxy_protocol_version;
++    ngx_array_t                     *proxy_protocol_tlvs;
+     ngx_flag_t                       half_close;
+     ngx_stream_upstream_local_t     *local;
+     ngx_flag_t                       socket_keepalive;
+@@ -124,6 +126,11 @@ static ngx_conf_post_t  ngx_stream_proxy_ssl_conf_command_post =
+ 
+ #endif
+ 
++static ngx_conf_bitmask_t ngx_stream_proxy_protocol[] = {
++    { ngx_string("v1"), NGX_PROXY_PROTOCOLv1 },
++    { ngx_string("v2"), NGX_PROXY_PROTOCOLv2 },
++    { ngx_null_string, 0 }
++};
+ 
+ static ngx_conf_deprecated_t  ngx_conf_deprecated_proxy_downstream_buffer = {
+     ngx_conf_deprecated, "proxy_downstream_buffer", "proxy_buffer_size"
+@@ -248,6 +255,20 @@ static ngx_command_t  ngx_stream_proxy_commands[] = {
+       offsetof(ngx_stream_proxy_srv_conf_t, proxy_protocol),
+       NULL },
+ 
++    { ngx_string("proxy_protocol_version"),
++      NGX_STREAM_MAIN_CONF|NGX_STREAM_SRV_CONF|NGX_CONF_TAKE1,
++      ngx_conf_set_num_slot,
++      NGX_STREAM_SRV_CONF_OFFSET,
++      offsetof(ngx_stream_proxy_src_conf_t, proxy_protocol_version),
++      &ngx_stream_proxy_protocol},
++
++    { ngx_string("proxy_protocol_tlv"),
++      NGX_STREAM_MAIN_CONF|NGX_STREAM_SRV_CONF|NGX_CONF_TAKE2,
++      ngx_conf_set_keyval_slot,
++      NGX_STREAM_SRV_CONF_OFFSET,
++      offsetof(ngx_stream_proxy_src_conf_t, proxy_protocol_tlvs),
++      NULL },
++
+     { ngx_string("proxy_half_close"),
+       NGX_STREAM_MAIN_CONF|NGX_STREAM_SRV_CONF|NGX_CONF_FLAG,
+       ngx_conf_set_flag_slot,
+@@ -2088,6 +2109,8 @@ ngx_stream_proxy_create_srv_conf(ngx_conf_t *cf)
+     conf->next_upstream_tries = NGX_CONF_UNSET_UINT;
+     conf->next_upstream = NGX_CONF_UNSET;
+     conf->proxy_protocol = NGX_CONF_UNSET;
++    conf->proxy_protocol_version = NGX_CONF_UNSET;
++    conf->proxy_protocol_tlv = NGX_CONF_UNSET_PTR;
+     conf->local = NGX_CONF_UNSET_PTR;
+     conf->socket_keepalive = NGX_CONF_UNSET;
+     conf->half_close = NGX_CONF_UNSET;
+@@ -2144,6 +2167,9 @@ ngx_stream_proxy_merge_srv_conf(ngx_conf_t *cf, void *parent, void *child)
+ 
+     ngx_conf_merge_value(conf->proxy_protocol, prev->proxy_protocol, 0);
+ 
++    ngx_conf_merge_value(conf->proxy_protocol_value,
++                         prev->proxy_protocol_version, NGX_PROXY_PROTOCOLv1);
++
+     ngx_conf_merge_ptr_value(conf->local, prev->local, NULL);
+ 
+     ngx_conf_merge_value(conf->socket_keepalive,
+@@ -2200,9 +2226,33 @@ ngx_stream_proxy_merge_srv_conf(ngx_conf_t *cf, void *parent, void *child)
+ 
+ #endif
+ 
++    ngx_stream_proxy_init_tlv(cf, conf)
++
+     return NGX_CONF_OK;
+ }
+ 
++static ngx_int_t
++ngx_stream_proxy_init_tlv(ngx_conf_t *cf, ngx_stream_proxy_srv_conf_t *conf)
++{
++   ngx_array_t   tlvs_merged; 
++   ngx_keyval_t  *src, *s;
++
++   if (conf->proxy_protocol_tlvs) {
++
++        src = conf->proxy_protocol_tlvs->elts;
++        for (i = 0; i < conf->proxy_protocol_tlvs->nelts; i++) {
++
++            s = ngx_array_push(&tlvs_merged);
++            if (s == NULL) {
++                return NGX_ERROR;
++            }
++
++            *s = src[i];
++        }
++    }
++    /** TODO: handle merged tlvs */
++}
++
+ 
+ #if (NGX_STREAM_SSL)
+ 
+
